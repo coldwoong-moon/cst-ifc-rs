@@ -13,6 +13,7 @@ cst-topology = { workspace = true }
 cst-geometry = { workspace = true }
 glam = { workspace = true }
 earcutr = "0.4"
+rayon = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.17"

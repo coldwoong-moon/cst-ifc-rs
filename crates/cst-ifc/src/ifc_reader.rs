@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use cst_math::{DVec3, DVec4, DMat4};
 use cst_core::Result;
+use rayon::prelude::*;
 
 /// A lightweight parsed IFC entity from streaming reader
 #[derive(Debug, Clone)]
@@ -179,135 +180,156 @@ fn resolve_colour_rgb(
 /// Resolves product placement chains and IFCMAPPEDITEM instances so that
 /// geometry is placed at world coordinates rather than all at origin.
 pub fn read_ifc_file(path: &Path) -> Result<Vec<IfcMeshData>> {
+    use std::time::Instant;
+    let t_start = Instant::now();
+
     // Phase 1: Stream through file, collect entities into HashMap by id
     let entities = parse_ifc_entities(path)?;
+    let t_parse = t_start.elapsed();
+    eprintln!("[PERF] Phase 1 - Parse entities: {:.2}s ({} entities)", t_parse.as_secs_f64(), entities.len());
 
     // Phase 1b: Build brep -> color lookup from style chain
     let brep_color_map = build_brep_color_map(&entities);
-    eprintln!("Built color map with {} entries", brep_color_map.len());
+    let t_color = t_start.elapsed();
+    eprintln!("[PERF] Phase 1b - Color map: {:.2}s ({:.2}s total, {} entries)",
+        (t_color - t_parse).as_secs_f64(), t_color.as_secs_f64(), brep_color_map.len());
 
     // Phase 2: Find all product elements
     let products: Vec<(u64, &IfcRawEntity)> = entities.iter()
         .filter(|(_, e)| PRODUCT_TYPES.contains(&e.type_name.as_str()))
         .map(|(id, e)| (*id, e))
         .collect();
+    let t_products = t_start.elapsed();
+    eprintln!("[PERF] Phase 2 - Find products: {:.2}s ({:.2}s total, {} products)",
+        (t_products - t_color).as_secs_f64(), t_products.as_secs_f64(), products.len());
 
-    eprintln!("Found {} product elements", products.len());
-
-    // Phase 3: Resolve each product to positioned mesh data
-    let mut results = Vec::new();
-
-    for (product_id, product) in &products {
-        let args = split_ifc_args(&product.raw_args);
-        // Product args layout (IFC2x3/IFC4):
-        // 0=GlobalId, 1=OwnerHistory, 2=Name, 3=Description, 4=ObjectType,
-        // 5=ObjectPlacement, 6=Representation, 7=Tag, [8..]=type-specific
-        if args.len() < 7 { continue; }
-
-        let name = args[2].trim().trim_matches('\'').to_string();
-        let name = if name == "$" || name.is_empty() {
-            format!("{}_{}", product.type_name, product_id)
-        } else {
-            name
-        };
-
-        let placement_id = extract_single_ref(&args[5]);
-        let representation_id = extract_single_ref(&args[6]);
-
-        // Resolve world transform from IFCLOCALPLACEMENT chain
-        let world_transform = placement_id
-            .map(|pid| resolve_placement_chain(pid, &entities))
-            .unwrap_or(DMat4::IDENTITY);
-
-        // Resolve geometry from representation (IFCPRODUCTDEFINITIONSHAPE)
-        let rep_id = match representation_id {
-            Some(id) => id,
-            None => continue,
-        };
-
-        let prod_def = match entities.get(&rep_id) {
-            Some(e) => e,
-            None => continue,
-        };
-
-        // IFCPRODUCTDEFINITIONSHAPE($,$,(#rep1,#rep2,...))
-        // The shape reps are in the 3rd argument (index 2)
-        let pd_args = split_ifc_args(&prod_def.raw_args);
-        let shape_rep_arg = if pd_args.len() >= 3 { &pd_args[2] } else { &prod_def.raw_args };
-        let shape_rep_refs = parse_entity_refs(shape_rep_arg);
-
-        for shape_rep_id in shape_rep_refs {
-            let shape_rep = match entities.get(&shape_rep_id) {
-                Some(e) if e.type_name == "IFCSHAPEREPRESENTATION" => e,
-                _ => continue,
-            };
-
-            // Get items from shape representation (4th arg, index 3)
-            let sr_args = split_ifc_args(&shape_rep.raw_args);
-            if sr_args.len() < 4 { continue; }
-            let item_refs = parse_entity_refs(&sr_args[3]);
-
-            for item_id in item_refs {
-                let item = match entities.get(&item_id) {
-                    Some(e) => e,
-                    None => continue,
-                };
-
-                match item.type_name.as_str() {
-                    "IFCFACETEDBREP" => {
-                        // Direct brep - apply world transform
-                        if let Some(mut mesh) = resolve_faceted_brep(item_id, &entities) {
-                            mesh.name = format!("{}_{}", name, product_id);
-                            mesh.color = brep_color_map.get(&item_id).copied();
-                            apply_transform_to_faces(&mut mesh.faces, &world_transform);
-                            results.push(mesh);
-                        }
-                    }
-                    "IFCMAPPEDITEM" => {
-                        // Mapped item: resolve source brep + mapping transform
-                        resolve_mapped_item(
-                            item_id, &item, &name, *product_id,
-                            &world_transform, &entities, &brep_color_map, &mut results,
-                        );
-                    }
-                    _ => {} // Skip other item types (e.g. IFCBOOLEANCLIPPINGRESULT)
-                }
-            }
-        }
-    }
+    // Phase 3: Resolve each product to positioned mesh data (parallel with rayon)
+    let results: Vec<IfcMeshData> = products.par_iter()
+        .flat_map_iter(|(product_id, product)| {
+            resolve_product(*product_id, product, &entities, &brep_color_map)
+        })
+        .collect();
 
     // Fallback: if no products found, use legacy brep-only approach
-    if results.is_empty() {
+    let results = if results.is_empty() {
         eprintln!("No products found, falling back to direct brep extraction");
         let brep_ids: Vec<u64> = entities.iter()
             .filter(|(_, entity)| entity.type_name == "IFCFACETEDBREP")
             .map(|(id, _)| *id)
             .collect();
-        for brep_id in brep_ids {
-            if let Some(mut mesh) = resolve_faceted_brep(brep_id, &entities) {
+        brep_ids.par_iter()
+            .filter_map(|&brep_id| {
+                let mut mesh = resolve_faceted_brep(brep_id, &entities)?;
                 mesh.color = brep_color_map.get(&brep_id).copied();
-                results.push(mesh);
+                Some(mesh)
+            })
+            .collect()
+    } else {
+        results
+    };
+
+    let t_resolve = t_start.elapsed();
+    eprintln!("[PERF] Phase 3 - Resolve meshes: {:.2}s ({:.2}s total, {} meshes)",
+        (t_resolve - t_products).as_secs_f64(), t_resolve.as_secs_f64(), results.len());
+    Ok(results)
+}
+
+/// Resolve a single product element into its mesh data (may produce 0 or more meshes).
+/// This is the per-product work unit for parallel execution.
+fn resolve_product(
+    product_id: u64,
+    product: &IfcRawEntity,
+    entities: &HashMap<u64, IfcRawEntity>,
+    brep_color_map: &HashMap<u64, [f32; 3]>,
+) -> Vec<IfcMeshData> {
+    let args = split_ifc_args(&product.raw_args);
+    // Product args layout (IFC2x3/IFC4):
+    // 0=GlobalId, 1=OwnerHistory, 2=Name, 3=Description, 4=ObjectType,
+    // 5=ObjectPlacement, 6=Representation, 7=Tag, [8..]=type-specific
+    if args.len() < 7 { return Vec::new(); }
+
+    let name = args[2].trim().trim_matches('\'').to_string();
+    let name = if name == "$" || name.is_empty() {
+        format!("{}_{}", product.type_name, product_id)
+    } else {
+        name
+    };
+
+    let placement_id = extract_single_ref(&args[5]);
+    let representation_id = match extract_single_ref(&args[6]) {
+        Some(id) => id,
+        None => return Vec::new(),
+    };
+
+    // Resolve world transform from IFCLOCALPLACEMENT chain
+    let world_transform = placement_id
+        .map(|pid| resolve_placement_chain(pid, entities))
+        .unwrap_or(DMat4::IDENTITY);
+
+    let prod_def = match entities.get(&representation_id) {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+
+    // IFCPRODUCTDEFINITIONSHAPE($,$,(#rep1,#rep2,...))
+    let pd_args = split_ifc_args(&prod_def.raw_args);
+    let shape_rep_arg = if pd_args.len() >= 3 { &pd_args[2] } else { &prod_def.raw_args };
+    let shape_rep_refs = parse_entity_refs(shape_rep_arg);
+
+    let mut results = Vec::new();
+
+    for shape_rep_id in shape_rep_refs {
+        let shape_rep = match entities.get(&shape_rep_id) {
+            Some(e) if e.type_name == "IFCSHAPEREPRESENTATION" => e,
+            _ => continue,
+        };
+
+        let sr_args = split_ifc_args(&shape_rep.raw_args);
+        if sr_args.len() < 4 { continue; }
+        let item_refs = parse_entity_refs(&sr_args[3]);
+
+        for item_id in item_refs {
+            let item = match entities.get(&item_id) {
+                Some(e) => e,
+                None => continue,
+            };
+
+            match item.type_name.as_str() {
+                "IFCFACETEDBREP" => {
+                    if let Some(mut mesh) = resolve_faceted_brep(item_id, entities) {
+                        mesh.name = format!("{}_{}", name, product_id);
+                        mesh.color = brep_color_map.get(&item_id).copied();
+                        apply_transform_to_faces(&mut mesh.faces, &world_transform);
+                        results.push(mesh);
+                    }
+                }
+                "IFCMAPPEDITEM" => {
+                    let mut mapped = resolve_mapped_item(
+                        item, &name, product_id,
+                        &world_transform, entities, brep_color_map,
+                    );
+                    results.append(&mut mapped);
+                }
+                _ => {}
             }
         }
     }
 
-    eprintln!("Parsed {} mesh objects from IFC", results.len());
-    Ok(results)
+    results
 }
 
-/// Resolve an IFCMAPPEDITEM into one or more meshes and push them to results.
+/// Resolve an IFCMAPPEDITEM into one or more meshes.
 fn resolve_mapped_item(
-    _item_id: u64,
     item: &IfcRawEntity,
     name: &str,
     product_id: u64,
     world_transform: &DMat4,
     entities: &HashMap<u64, IfcRawEntity>,
     brep_color_map: &HashMap<u64, [f32; 3]>,
-    results: &mut Vec<IfcMeshData>,
-) {
+) -> Vec<IfcMeshData> {
+    let mut results = Vec::new();
     let mi_args = split_ifc_args(&item.raw_args);
-    if mi_args.len() < 2 { return; }
+    if mi_args.len() < 2 { return results; }
     let map_source_id = extract_single_ref(&mi_args[0]);
     let map_target_id = extract_single_ref(&mi_args[1]);
 
@@ -347,7 +369,6 @@ fn resolve_mapped_item(
                                             if e.type_name == "IFCFACETEDBREP" {
                                                 if let Some(mut mesh) = resolve_faceted_brep(brep_id, entities) {
                                                     mesh.name = format!("{}_{}", name, product_id);
-                                                    // Color may be on the brep directly
                                                     mesh.color = brep_color_map.get(&brep_id).copied();
                                                     apply_transform_to_faces(&mut mesh.faces, &combined);
                                                     results.push(mesh);
@@ -363,19 +384,22 @@ fn resolve_mapped_item(
             }
         }
     }
+    results
 }
 
 /// Parse IFC file line-by-line and collect geometry-related entities
 fn parse_ifc_entities(path: &Path) -> Result<HashMap<u64, IfcRawEntity>> {
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    // Use 1MB read buffer instead of default 8KB to reduce syscalls on large files
+    let reader = BufReader::with_capacity(1_048_576, file);
 
-    let mut entities = HashMap::new();
+    // Pre-allocate for large files (typical IFC: ~3.5M geometry entities)
+    let mut entities = HashMap::with_capacity(4_000_000);
     let mut line_count = 0usize;
-    let mut current_line = String::new();
+    let mut current_line = String::with_capacity(256);
 
-    // Geometry-related entity types we care about
-    let geometry_types = [
+    // Geometry-related entity types we care about - use HashSet for O(1) lookup
+    let geometry_types: HashSet<&str> = [
         // Points, directions, loops
         "IFCCARTESIANPOINT", "IFCDIRECTION", "IFCPOLYLOOP",
         // Face bounds (both outer and regular)
@@ -402,7 +426,7 @@ fn parse_ifc_entities(path: &Path) -> Result<HashMap<u64, IfcRawEntity>> {
         "IFCSTAIR", "IFCSTAIRFLIGHT", "IFCRAILING", "IFCRAMP", "IFCRAMPFLIGHT",
         "IFCDOOR", "IFCWINDOW", "IFCCOVERING", "IFCCURTAINWALL",
         "IFCPILE", "IFCTENDON", "IFCREINFORCINGMESH",
-    ];
+    ].into_iter().collect();
 
     for line in reader.lines() {
         let line = line?;
@@ -425,12 +449,10 @@ fn parse_ifc_entities(path: &Path) -> Result<HashMap<u64, IfcRawEntity>> {
             continue;
         }
 
-        // Parse complete entity
-        if let Some(entity) = parse_entity_line(&current_line) {
-            // Only keep geometry-related entities
-            if geometry_types.contains(&entity.type_name.as_str()) {
-                entities.insert(entity.entity_id, entity);
-            }
+        // Parse entity with early type filtering to avoid allocating raw_args
+        // for non-geometry entities (saves ~1M String allocations on large files)
+        if let Some(entity) = parse_entity_line_filtered(&current_line, &geometry_types) {
+            entities.insert(entity.entity_id, entity);
         }
 
         current_line.clear();
@@ -441,6 +463,7 @@ fn parse_ifc_entities(path: &Path) -> Result<HashMap<u64, IfcRawEntity>> {
 }
 
 /// Parse a single entity line like "#47= IFCCARTESIANPOINT((165379.999999999,22500.,18830.));"
+#[cfg(test)]
 fn parse_entity_line(line: &str) -> Option<IfcRawEntity> {
     let line = line.trim();
 
@@ -467,13 +490,47 @@ fn parse_entity_line(line: &str) -> Option<IfcRawEntity> {
     })
 }
 
+/// Parse entity line with early type filtering.
+/// Extracts the type name first and checks against the geometry_types HashSet
+/// BEFORE allocating the raw_args String. This avoids ~1M unnecessary String
+/// allocations on large IFC files where most entities are non-geometry types.
+fn parse_entity_line_filtered(line: &str, geometry_types: &HashSet<&str>) -> Option<IfcRawEntity> {
+    let line = line.trim();
+
+    // Extract entity ID
+    let id_end = line.find('=')?;
+    let id_str = &line[1..id_end].trim();
+    let entity_id = id_str.parse::<u64>().ok()?;
+
+    // Extract type name (without allocating yet)
+    let type_start = id_end + 1;
+    let type_section = line[type_start..].trim();
+    let paren_pos = type_section.find('(')?;
+    let type_name_str = type_section[..paren_pos].trim();
+
+    // Early exit: skip non-geometry types BEFORE allocating raw_args String
+    if !geometry_types.contains(type_name_str) {
+        return None;
+    }
+
+    // Only allocate strings for geometry types we care about
+    let args_end = type_section.rfind(')')?;
+    let raw_args = type_section[paren_pos + 1..args_end].to_string();
+
+    Some(IfcRawEntity {
+        entity_id,
+        type_name: type_name_str.to_string(),
+        raw_args,
+    })
+}
+
 /// Split IFC arguments at top-level commas, respecting nested parens and strings.
 ///
 /// For example, `"'name',$,#51,(#145),0.5,.NOTDEFINED."` produces:
 /// `["'name'", "$", "#51", "(#145)", "0.5", ".NOTDEFINED."]`
 fn split_ifc_args(raw_args: &str) -> Vec<String> {
-    let mut result = Vec::new();
-    let mut current = String::new();
+    let mut result = Vec::with_capacity(8); // Most IFC entities have <8 args
+    let mut current = String::with_capacity(32);
     let mut depth = 0i32;
     let mut in_string = false;
 
@@ -819,8 +876,8 @@ fn parse_point(point_id: u64, entities: &HashMap<u64, IfcRawEntity>) -> Option<D
 
 /// Parse entity references from raw args like "(#55,#56,#57,#58)"
 pub fn parse_entity_refs(raw_args: &str) -> Vec<u64> {
-    let mut refs = Vec::new();
-    let mut current_num = String::new();
+    let mut refs = Vec::with_capacity(8);
+    let mut current_num = String::with_capacity(12);
     let mut in_hash = false;
 
     for ch in raw_args.chars() {
@@ -854,8 +911,8 @@ pub fn parse_entity_refs(raw_args: &str) -> Vec<u64> {
 
 /// Parse comma-separated real numbers from text like "(165379.999999999,22500.,18830.)"
 pub fn parse_real_list(text: &str) -> Vec<f64> {
-    let mut numbers = Vec::new();
-    let mut current = String::new();
+    let mut numbers = Vec::with_capacity(4); // Most IFC coords are 3D or 4D
+    let mut current = String::with_capacity(24);
     let mut depth = 0;
 
     for ch in text.chars() {

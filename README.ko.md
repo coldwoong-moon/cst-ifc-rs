@@ -27,8 +27,8 @@ BIM/CAD 애플리케이션을 위한 고성능 Rust IFC(Industry Foundation Clas
 
 | 작업 | 시간 | 처리량 |
 |------|------|--------|
-| 파싱 + 메시 변환 | **39.3초** | 10 MB/s, 123K lines/sec |
-| 전체 파이프라인 (파싱 + 변환 + 내보내기) | **51.4초** | 730K triangles/sec |
+| 파싱 + 메시 변환 | **17.7초** | 22.3 MB/s, 274K lines/sec |
+| 전체 파이프라인 (파싱 + 변환 + 내보내기) | **~29.8초** | 1.62M triangles/sec |
 | 바이너리 내보내기 | ~12초 | 848.5 MB 출력 |
 
 **출력 결과**:
@@ -37,7 +37,7 @@ BIM/CAD 애플리케이션을 위한 고성능 Rust IFC(Industry Foundation Clas
 - 바이너리 메시 크기: **848.5 MB** (인스턴싱 포함 v3 포맷)
 - 지오메트리 인스턴싱: **8개 중복 그룹** 탐지
 
-**아키텍처**: 단일 스레드 STEP 파싱, 멀티스레드 메시 테셀레이션 (rayon)
+**아키텍처**: 최적화된 STEP 파싱 (HashSet 필터, 1MB 버퍼, 조기 타입 판별), 멀티스레드 메시 변환 (rayon)
 
 ## 타 라이브러리와 성능 비교
 
@@ -48,7 +48,7 @@ BIM/CAD 애플리케이션을 위한 고성능 Rust IFC(Industry Foundation Clas
 
 | 라이브러리 | 언어 | 200MB IFC | 395MB IFC | 700MB IFC | 비고 |
 |---|---|---|---|---|---|
-| **cst-ifc-rs** | Rust | ~20s (추정) | **39.3s** (실측) | ~70s (추정) | 스트리밍 파서, 메모리 효율적 |
+| **cst-ifc-rs** | Rust | ~9s (추정) | **17.7s** (실측) | ~32s (추정) | 최적화 파서 + rayon 병렬 |
 | **xBIM** | C#/.NET | 20s | ~33s (추정) | 46s | .NET 기반, 빠른 파싱 |
 | **IfcOpenShell** | C++/Python | 70s | ~150s (추정) | 288s | OCC 기반 지오메트리 엔진 |
 | **web-ifc** | C++/WASM | N/A | N/A | N/A | 55MB 이하만 테스트됨 |

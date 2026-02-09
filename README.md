@@ -24,8 +24,8 @@ High-performance Rust IFC (Industry Foundation Classes) parser and mesh converte
 
 | Operation | Time | Throughput |
 |-----------|------|------------|
-| Parse + Mesh Convert | **39.3 seconds** | 10 MB/s, 123K lines/sec |
-| Full Pipeline (parse + convert + export) | **51.4 seconds** | 730K triangles/sec |
+| Parse + Mesh Convert | **17.7 seconds** | 22.3 MB/s, 274K lines/sec |
+| Full Pipeline (parse + convert + export) | **~29.8 seconds** | 1.62M triangles/sec |
 | Binary Export | ~12 seconds | 848.5 MB output |
 
 **Output**:
@@ -34,7 +34,7 @@ High-performance Rust IFC (Industry Foundation Classes) parser and mesh converte
 - Binary mesh size: **848.5 MB** (v3 format with instancing)
 - Geometry instancing: **8 duplicate groups** detected
 
-**Architecture**: Single-threaded STEP parsing, multi-threaded mesh tessellation (rayon)
+**Architecture**: Optimized STEP parsing (HashSet filter, 1MB buffer, early type rejection), multi-threaded mesh conversion (rayon)
 
 ## Test Results
 
