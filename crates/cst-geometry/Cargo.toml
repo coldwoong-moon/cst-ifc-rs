@@ -1,0 +1,14 @@
+[package]
+name = "cst-geometry"
+description = "CSTEngine geometry: curves, surfaces, NURBS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+cst-core = { workspace = true }
+cst-math = { workspace = true }
+nalgebra = { workspace = true }
+approx = { workspace = true }
+serde = { workspace = true }

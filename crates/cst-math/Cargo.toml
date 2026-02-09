@@ -1,0 +1,13 @@
+[package]
+name = "cst-math"
+description = "CSTEngine math primitives: vectors, matrices, transforms, geometric utilities"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+cst-core = { workspace = true }
+glam = { workspace = true }
+approx = { workspace = true }
+serde = { workspace = true }

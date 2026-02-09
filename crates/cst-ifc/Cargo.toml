@@ -1,0 +1,18 @@
+[package]
+name = "cst-ifc"
+description = "CSTEngine IFC parser: STEP text parsing and IFC entity mapping"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+cst-core = { workspace = true }
+cst-math = { workspace = true }
+cst-topology = { workspace = true }
+cst-geometry = { workspace = true }
+glam = { workspace = true }
+earcutr = "0.4"
+
+[dev-dependencies]
+tempfile = "3.17"

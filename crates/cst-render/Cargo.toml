@@ -1,0 +1,15 @@
+[package]
+name = "cst-render"
+description = "CSTEngine GPU rendering pipeline (wgpu-based)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+cst-core = { workspace = true }
+cst-math = { workspace = true }
+cst-mesh = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1.0"

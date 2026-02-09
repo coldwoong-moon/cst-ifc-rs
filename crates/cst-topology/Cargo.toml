@@ -1,0 +1,13 @@
+[package]
+name = "cst-topology"
+description = "CSTEngine B-Rep topology: Half-Edge data structure"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+cst-core = { workspace = true }
+cst-math = { workspace = true }
+slotmap = { workspace = true }
+serde = { workspace = true }

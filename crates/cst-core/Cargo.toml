@@ -1,0 +1,11 @@
+[package]
+name = "cst-core"
+description = "CSTEngine core types, errors, and utilities"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }

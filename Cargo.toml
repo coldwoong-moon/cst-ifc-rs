@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cst-core",
+    "crates/cst-math",
+    "crates/cst-topology",
+    "crates/cst-geometry",
+    "crates/cst-mesh",
+    "crates/cst-ifc",
+    "crates/cst-render",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/coldwoong-moon/cst-ifc-rs"
+
+[workspace.dependencies]
+# Internal crates
+cst-core = { path = "crates/cst-core" }
+cst-math = { path = "crates/cst-math" }
+cst-topology = { path = "crates/cst-topology" }
+cst-geometry = { path = "crates/cst-geometry" }
+cst-mesh = { path = "crates/cst-mesh" }
+cst-ifc = { path = "crates/cst-ifc" }
+cst-render = { path = "crates/cst-render" }
+
+# Math
+glam = { version = "0.29", features = ["bytemuck", "serde"] }
+nalgebra = "0.33"
+approx = "0.5"
+
+# Error handling
+thiserror = "2"
+
+# Data structures
+slotmap = { version = "1", features = ["serde"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+serde_json = "1"
+
+# Parallelism
+rayon = "1.10"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
