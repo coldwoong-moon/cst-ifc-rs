@@ -1,3 +1,5 @@
+> **[한국어](README.ko.md)** | English
+
 # cst-ifc-rs
 
 High-performance Rust IFC (Industry Foundation Classes) parser and mesh converter for BIM/CAD applications.
